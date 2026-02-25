@@ -1,226 +1,302 @@
 %% ========================================================================
-%  BUILD UCAV NDI SIMULINK MODEL
+%  BUILD_UCAV_SIMULINK_MODEL — Programmatic Simulink model for UCAV INDI
 %  ========================================================================
 %
-%  MODULE PURPOSE:
-%  ---------------
-%  Programmatically creates a Simulink model (fighter_ucav_sim.slx) that
-%  implements the full autonomous UCAV trajectory-following system:
+%  Creates a complete Simulink model (ucav_indi_sim.slx) implementing:
 %
-%   ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌──────────┐  ┌─────────┐
-%   │ Mission  │─>│ Guidance  │─>│ NDI/INDI  │─>│Actuators │─>│ 6-DOF   │
-%   │ Waypoint │  │ (L1+TECS)│  │ Autopilot │  │          │  │ Plant   │
-%   │ Source   │  │          │  │           │  │          │  │         │
-%   └──────────┘  └──────────┘  └───────────┘  └──────────┘  └─────────┘
-%                      ↑  ↑            ↑             │             │
-%                      │  └── act pos ─┘             │             │
-%                      └─── full state ──────────────┴─────────────┘
+%   ┌──────────────┐   ┌───────────┐   ┌──────────┐   ┌──────────────┐
+%   │  L1+PI       │──>│   INDI    │──>│Actuators │──>│  6-DOF Plant │
+%   │  Guidance    │   │ Controller│   │(TF+RL+Sat)│  │ (ucav_plant_ │
+%   │              │   │           │   │          │   │  sfunc)      │
+%   └──────────────┘   └───────────┘   └──────────┘   └──────────────┘
+%         ↑  ↑              ↑               │                │
+%         │  └── act pos ───┘               │                │
+%         └─── full state ──────────────────┴────────────────┘
 %
-%  BLOCK DESCRIPTIONS:
-%    1. Mission Waypoint Source — From Workspace blocks feeding current
-%       waypoint commands to the guidance law
-%    2. Guidance S-Function — L1 lateral + TECS longitudinal → phi/theta/thr
-%    3. NDI Autopilot S-Function — NDI/INDI → surface commands
-%    4. Actuator Subsystem — TF + Rate Limiter + Saturation per surface
-%    5. 6-DOF Plant S-Function — Full nonlinear fighter dynamics
-%    6. Scopes — Flight params, ground track, surfaces, attitude
-%    7. To Workspace — All signals logged for post-sim analysis
+%  Block details:
+%    1. Guidance S-Function (ucav_guidance_sfunc)
+%       - 4 input ports: position, velocity, euler, airdata
+%       - 3 output ports: att_cmd, throttle, debug
+%    2. INDI Controller S-Function (indi_controller_sfunc)
+%       - 6 input ports: att_cmd, velocity, omega, euler, omega_dot, act_pos
+%       - 2 output ports: surf_cmd, debug
+%    3. Actuator Subsystem
+%       - 3 channels: aileron, elevator, rudder (NO canard)
+%       - Each channel: TF(1/(tau*s+1)) + Rate Limiter + Saturation
+%    4. Plant S-Function (ucav_plant_sfunc)
+%       - 4 input ports: da, de, dr, throttle
+%       - 7 output ports: pos, vel, omega, euler, accel, omega_dot, airdata
 %
-%  PREREQUISITES:
-%    Run setup_ucav.m before this script.
+%  Prerequisites: Run setup_ucav.m before this script.
+%
+%  Usage:
+%    >> setup_ucav
+%    >> build_ucav_simulink_model
+%    >> sim('ucav_indi_sim')
 %
 %  ========================================================================
 
 fprintf('==========================================================\n');
-fprintf(' Building UCAV NDI Simulink Model\n');
+fprintf(' Building UCAV INDI Simulink Model\n');
 fprintf('==========================================================\n\n');
 
 %% Check prerequisites
 if ~exist('aircraft','var') || ~exist('fcs','var') || ~exist('mission','var')
-    fprintf('Running setup_ucav first...\n\n');
+    fprintf('  Running setup_ucav first...\n\n');
     setup_ucav;
 end
 
-addpath('../fighter_ndi');
-
 %% Model name
-mdl = 'ucav_ndi_sim';
+mdl = 'ucav_indi_sim';
 if bdIsLoaded(mdl), close_system(mdl, 0); end
 new_system(mdl);
 open_system(mdl);
 
 dt = sim_params.dt;
-
-fprintf('Creating model: %s\n\n', mdl);
+fprintf('  Creating model: %s\n\n', mdl);
 
 %% ====================================================================
-%  LAYOUT
+%  LAYOUT CONSTANTS
 %  ====================================================================
-col1 = 50;   col2 = 350;  col3 = 700; col4 = 1050; col5 = 1400;
-row_main = 200; bw = 180; bh = 140;
+col1 = 50;    % Guidance
+col2 = 400;   % INDI Controller
+col3 = 750;   % Actuators
+col4 = 1100;  % Plant
+col5 = 1500;  % Scopes/Logging
+row_main = 200;
+bw = 200;     % Block width
+bh = 140;     % Block height
 
 %% ====================================================================
 %  1. GUIDANCE S-FUNCTION
 %  ====================================================================
-fprintf('  [1/6] Adding guidance S-function...\n');
+fprintf('  [1/7] Adding guidance S-function...\n');
 
 add_block('simulink/User-Defined Functions/Level-2 MATLAB S-Function', ...
-    [mdl '/Guidance_L1_TECS'], ...
-    'Position', [col2, row_main-60, col2+bw, row_main+bh-40], ...
+    [mdl '/Guidance'], ...
+    'Position', [col1, row_main-50, col1+bw, row_main+bh-50], ...
     'FunctionName', 'ucav_guidance_sfunc');
 
 %% ====================================================================
-%  2. NDI AUTOPILOT S-FUNCTION
+%  2. INDI CONTROLLER S-FUNCTION
 %  ====================================================================
-fprintf('  [2/6] Adding NDI autopilot S-function...\n');
+fprintf('  [2/7] Adding INDI controller S-function...\n');
 
 add_block('simulink/User-Defined Functions/Level-2 MATLAB S-Function', ...
-    [mdl '/NDI_Autopilot'], ...
-    'Position', [col3, row_main-60, col3+bw, row_main+bh-40], ...
-    'FunctionName', 'ucav_autopilot_sfunc');
+    [mdl '/INDI_Controller'], ...
+    'Position', [col2, row_main-50, col2+bw, row_main+bh-50], ...
+    'FunctionName', 'indi_controller_sfunc');
 
 %% ====================================================================
-%  3. ACTUATOR SUBSYSTEM
+%  3. ACTUATOR SUBSYSTEM (3 channels: aileron, elevator, rudder)
 %  ====================================================================
-fprintf('  [3/6] Adding actuator subsystem...\n');
+fprintf('  [3/7] Adding actuator subsystem...\n');
 
 add_block('simulink/Ports & Subsystems/Subsystem', [mdl '/Actuators']);
-set_param([mdl '/Actuators'], 'Position', [col4-50, row_main-40, col4+130, row_main+bh-60]);
+set_param([mdl '/Actuators'], 'Position', ...
+    [col3, row_main-30, col3+bw-20, row_main+bh-60]);
 
-% Build internal actuator channels
+% Clean default content
 act_sub = [mdl '/Actuators'];
 delete_line(act_sub, 'In1/1', 'Out1/1');
-delete_block([act_sub '/In1']); delete_block([act_sub '/Out1']);
+delete_block([act_sub '/In1']);
+delete_block([act_sub '/Out1']);
 
-add_block('simulink/Sources/In1', [act_sub '/Cmd'], 'Position', [20,100,50,114], 'Port', '1');
-add_block('simulink/Signal Routing/Demux', [act_sub '/Dmx'], 'Position', [80,40,85,220], 'Inputs', '4');
-add_line(act_sub, 'Cmd/1', 'Dmx/1');
+% Input: commanded surfaces [3] = [da_cmd; de_cmd; dr_cmd]
+add_block('simulink/Sources/In1', [act_sub '/Cmd_In'], ...
+    'Position', [20, 80, 50, 94], 'Port', '1');
+add_block('simulink/Signal Routing/Demux', [act_sub '/Dmx'], ...
+    'Position', [80, 30, 85, 170], 'Inputs', '3');
+add_line(act_sub, 'Cmd_In/1', 'Dmx/1');
 
-tau_a = 0.02;
-names = {'deL','deR','dr','dc'};
-rates = [80,80,60,60]; pos_lim = [25,25,30,25];
-yo = [30,90,150,210];
-for i = 1:4
-    nm = names{i}; y=yo(i);
-    add_block('simulink/Continuous/Transfer Fcn', [act_sub '/TF_' nm], 'Position', [130,y,210,y+25], ...
-        'Numerator','[1]','Denominator',sprintf('[%g 1]',tau_a));
-    add_block('simulink/Discontinuities/Rate Limiter', [act_sub '/RL_' nm], 'Position', [240,y,300,y+25], ...
-        'RisingSlewLimit',sprintf('%g',deg2rad(rates(i))),'FallingSlewLimit',sprintf('%g',-deg2rad(rates(i))));
-    add_block('simulink/Discontinuities/Saturation', [act_sub '/Sat_' nm], 'Position', [330,y,380,y+25], ...
-        'UpperLimit',sprintf('%g',deg2rad(pos_lim(i))),'LowerLimit',sprintf('%g',-deg2rad(pos_lim(i))));
-    add_line(act_sub, sprintf('Dmx/%d',i), ['TF_' nm '/1']);
+% Actuator channel parameters
+names     = {'Aileron', 'Elevator', 'Rudder'};
+tau_a     = aircraft.act.tau;
+rates_max = [aircraft.act.aileron.rate_max, ...
+             aircraft.act.elevator.rate_max, ...
+             aircraft.act.rudder.rate_max];
+pos_max   = [aircraft.act.aileron.pos_max, ...
+             aircraft.act.elevator.pos_max, ...
+             aircraft.act.rudder.pos_max];
+yo = [20, 80, 140];
+
+for i = 1:3
+    nm = names{i}; y = yo(i);
+
+    % Transfer function: 1/(tau*s + 1)
+    add_block('simulink/Continuous/Transfer Fcn', [act_sub '/TF_' nm], ...
+        'Position', [130, y, 210, y+25], ...
+        'Numerator', '[1]', ...
+        'Denominator', sprintf('[%g 1]', tau_a));
+
+    % Rate limiter
+    add_block('simulink/Discontinuities/Rate Limiter', [act_sub '/RL_' nm], ...
+        'Position', [240, y, 310, y+25], ...
+        'RisingSlewLimit', sprintf('%g', rates_max(i)), ...
+        'FallingSlewLimit', sprintf('%g', -rates_max(i)));
+
+    % Saturation
+    add_block('simulink/Discontinuities/Saturation', [act_sub '/Sat_' nm], ...
+        'Position', [340, y, 400, y+25], ...
+        'UpperLimit', sprintf('%g', pos_max(i)), ...
+        'LowerLimit', sprintf('%g', -pos_max(i)));
+
+    % Wire: Demux -> TF -> RL -> Sat
+    add_line(act_sub, sprintf('Dmx/%d', i), ['TF_' nm '/1']);
     add_line(act_sub, ['TF_' nm '/1'], ['RL_' nm '/1']);
     add_line(act_sub, ['RL_' nm '/1'], ['Sat_' nm '/1']);
 end
 
-add_block('simulink/Signal Routing/Mux', [act_sub '/Mux_Out'], 'Position', [420,50,425,240], 'Inputs', '4');
-for i = 1:4
-    add_line(act_sub, ['Sat_' names{i} '/1'], sprintf('Mux_Out/%d',i));
+% Mux actuator outputs back to [3]
+add_block('simulink/Signal Routing/Mux', [act_sub '/Mux_Out'], ...
+    'Position', [440, 30, 445, 170], 'Inputs', '3');
+for i = 1:3
+    add_line(act_sub, ['Sat_' names{i} '/1'], sprintf('Mux_Out/%d', i));
 end
 
-add_block('simulink/Sinks/Out1', [act_sub '/Out_Surf'], 'Position', [470,130,500,144], 'Port', '1');
-add_block('simulink/Sinks/Out1', [act_sub '/Out_FB'],   'Position', [470,170,500,184], 'Port', '2');
-add_line(act_sub, 'Mux_Out/1', 'Out_Surf/1');
-add_line(act_sub, 'Mux_Out/1', 'Out_FB/1');
+% Output 1: actual surfaces -> Plant
+add_block('simulink/Sinks/Out1', [act_sub '/Surf_Out'], ...
+    'Position', [490, 80, 520, 94], 'Port', '1');
+add_line(act_sub, 'Mux_Out/1', 'Surf_Out/1');
+
+% Output 2: actual positions -> INDI feedback
+add_block('simulink/Sinks/Out1', [act_sub '/Pos_FB'], ...
+    'Position', [490, 120, 520, 134], 'Port', '2');
+add_line(act_sub, 'Mux_Out/1', 'Pos_FB/1');
 
 %% ====================================================================
 %  4. 6-DOF PLANT S-FUNCTION
 %  ====================================================================
-fprintf('  [4/6] Adding 6-DOF plant...\n');
+fprintf('  [4/7] Adding 6-DOF plant...\n');
 
 add_block('simulink/User-Defined Functions/Level-2 MATLAB S-Function', ...
     [mdl '/Plant_6DOF'], ...
-    'Position', [col5-50, row_main-80, col5+130, row_main+bh-20], ...
-    'FunctionName', 'fighter_plant_sfunc');
+    'Position', [col4, row_main-70, col4+bw, row_main+bh], ...
+    'FunctionName', 'ucav_plant_sfunc');
 
-% Demux actuator output to 4 scalar plant inputs
-add_block('simulink/Signal Routing/Demux', [mdl '/Demux_Surf'], ...
-    'Position', [col4+160, row_main-40, col4+165, row_main+bh-70], 'Outputs', '4');
-add_line(mdl, 'Actuators/1', 'Demux_Surf/1');
-for i = 1:4
-    add_line(mdl, sprintf('Demux_Surf/%d',i), sprintf('Plant_6DOF/%d',i));
+%% ====================================================================
+%  5. ACTUATOR-TO-PLANT WIRING
+%  ====================================================================
+fprintf('  [5/7] Wiring actuators to plant...\n');
+
+% Demux actuator [3] output into 3 scalar plant inputs
+add_block('simulink/Signal Routing/Demux', [mdl '/Dmx_Surf'], ...
+    'Position', [col3+bw+10, row_main-20, col3+bw+15, row_main+bh-70], ...
+    'Outputs', '3');
+add_line(mdl, 'Actuators/1', 'Dmx_Surf/1');
+
+% Connect 3 surfaces to plant inputs 1-3 (da, de, dr)
+for i = 1:3
+    add_line(mdl, sprintf('Dmx_Surf/%d', i), sprintf('Plant_6DOF/%d', i));
 end
 
-% Throttle: guidance → NDI → separate line to plant port 5
-% (Handled via autopilot output port 2)
-add_line(mdl, 'NDI_Autopilot/2', 'Plant_6DOF/5', 'autorouting', 'smart');
+% Throttle: guidance output -> plant input 4
+add_line(mdl, 'Guidance/2', 'Plant_6DOF/4', 'autorouting', 'smart');
 
 %% ====================================================================
-%  5. WIRING
+%  6. SIGNAL WIRING
 %  ====================================================================
-fprintf('  [5/6] Wiring connections...\n');
+fprintf('  [6/7] Wiring signal connections...\n');
 
-% Guidance outputs → NDI Autopilot
-add_line(mdl, 'Guidance_L1_TECS/1', 'NDI_Autopilot/1', 'autorouting', 'smart');  % [phi_cmd;theta_cmd]
+% --- Guidance -> INDI Controller ---
+% Guidance port 1 [phi_cmd; theta_cmd] -> INDI port 1
+add_line(mdl, 'Guidance/1', 'INDI_Controller/1', 'autorouting', 'smart');
 
-% NDI Autopilot surface commands → Actuators
-add_line(mdl, 'NDI_Autopilot/1', 'Actuators/1', 'autorouting', 'smart');  % [de_L;de_R;dr;dc]
+% --- INDI Controller -> Actuators ---
+% INDI port 1 [da_cmd; de_cmd; dr_cmd] -> Actuators port 1
+add_line(mdl, 'INDI_Controller/1', 'Actuators/1', 'autorouting', 'smart');
 
-% Plant feedback → Guidance (position, velocity, euler, airdata)
-add_line(mdl, 'Plant_6DOF/1', 'Guidance_L1_TECS/1', 'autorouting', 'smart'); % position
-add_line(mdl, 'Plant_6DOF/2', 'Guidance_L1_TECS/2', 'autorouting', 'smart'); % velocity
-add_line(mdl, 'Plant_6DOF/4', 'Guidance_L1_TECS/3', 'autorouting', 'smart'); % euler
-add_line(mdl, 'Plant_6DOF/7', 'Guidance_L1_TECS/4', 'autorouting', 'smart'); % airdata
+% --- Plant -> Guidance feedback ---
+% Plant port 1 (position) -> Guidance port 1
+add_line(mdl, 'Plant_6DOF/1', 'Guidance/1', 'autorouting', 'smart');
+% Plant port 2 (velocity) -> Guidance port 2
+add_line(mdl, 'Plant_6DOF/2', 'Guidance/2', 'autorouting', 'smart');
+% Plant port 4 (euler) -> Guidance port 3
+add_line(mdl, 'Plant_6DOF/4', 'Guidance/3', 'autorouting', 'smart');
+% Plant port 7 (airdata) -> Guidance port 4
+add_line(mdl, 'Plant_6DOF/7', 'Guidance/4', 'autorouting', 'smart');
 
-% Plant feedback → NDI Autopilot
-add_line(mdl, 'Plant_6DOF/2', 'NDI_Autopilot/2', 'autorouting', 'smart'); % velocity
-add_line(mdl, 'Plant_6DOF/3', 'NDI_Autopilot/3', 'autorouting', 'smart'); % omega
-add_line(mdl, 'Plant_6DOF/4', 'NDI_Autopilot/4', 'autorouting', 'smart'); % euler
-add_line(mdl, 'Plant_6DOF/5', 'NDI_Autopilot/5', 'autorouting', 'smart'); % accel
-add_line(mdl, 'Plant_6DOF/6', 'NDI_Autopilot/6', 'autorouting', 'smart'); % omega_dot
+% --- Plant -> INDI Controller feedback ---
+% Plant port 2 (velocity) -> INDI port 2
+add_line(mdl, 'Plant_6DOF/2', 'INDI_Controller/2', 'autorouting', 'smart');
+% Plant port 3 (omega) -> INDI port 3
+add_line(mdl, 'Plant_6DOF/3', 'INDI_Controller/3', 'autorouting', 'smart');
+% Plant port 4 (euler) -> INDI port 4
+add_line(mdl, 'Plant_6DOF/4', 'INDI_Controller/4', 'autorouting', 'smart');
+% Plant port 6 (omega_dot) -> INDI port 5
+add_line(mdl, 'Plant_6DOF/6', 'INDI_Controller/5', 'autorouting', 'smart');
 
-% Actuator position feedback → NDI Autopilot
-add_line(mdl, 'Actuators/2', 'NDI_Autopilot/7', 'autorouting', 'smart');
+% --- Actuator position feedback -> INDI port 6 ---
+add_line(mdl, 'Actuators/2', 'INDI_Controller/6', 'autorouting', 'smart');
 
 %% ====================================================================
-%  6. SCOPES AND LOGGING
+%  7. SCOPES AND LOGGING
 %  ====================================================================
-fprintf('  [6/6] Adding scopes and logging...\n');
+fprintf('  [7/7] Adding scopes and logging...\n');
 
-sc_x = col5 + 200;
+sc_x = col5;
 
-% Scope: Guidance debug
-add_block('simulink/Sinks/Scope', [mdl '/Guidance_Scope'], ...
-    'Position', [sc_x, 50, sc_x+50, 100], 'NumInputPorts', '1', ...
+% Scope: Guidance Debug
+add_block('simulink/Sinks/Scope', [mdl '/Guidance_Debug'], ...
+    'Position', [sc_x, 30, sc_x+50, 80], ...
+    'NumInputPorts', '1', ...
     'OpenAtSimulationStart', 'on');
-add_line(mdl, 'Guidance_L1_TECS/2', 'Guidance_Scope/1', 'autorouting', 'smart');
+add_line(mdl, 'Guidance/3', 'Guidance_Debug/1', 'autorouting', 'smart');
 
-% Scope: Attitude
+% Scope: Attitude (euler + omega)
 add_block('simulink/Sinks/Scope', [mdl '/Attitude_Scope'], ...
-    'Position', [sc_x, 130, sc_x+50, 180], 'NumInputPorts', '2', ...
+    'Position', [sc_x, 110, sc_x+50, 160], ...
+    'NumInputPorts', '2', ...
     'OpenAtSimulationStart', 'on');
 add_line(mdl, 'Plant_6DOF/4', 'Attitude_Scope/1', 'autorouting', 'smart');
 add_line(mdl, 'Plant_6DOF/3', 'Attitude_Scope/2', 'autorouting', 'smart');
 
-% Scope: Surfaces
+% Scope: Surface deflections
 add_block('simulink/Sinks/Scope', [mdl '/Surface_Scope'], ...
-    'Position', [sc_x, 210, sc_x+50, 260], 'NumInputPorts', '1');
-add_line(mdl, 'Actuators/1', 'Surface_Scope/1', 'autorouting', 'smart');
+    'Position', [sc_x, 190, sc_x+50, 240], ...
+    'NumInputPorts', '2');
+add_line(mdl, 'INDI_Controller/1', 'Surface_Scope/1', 'autorouting', 'smart');
+add_line(mdl, 'Actuators/1', 'Surface_Scope/2', 'autorouting', 'smart');
 
 % Scope: Position
 add_block('simulink/Sinks/Scope', [mdl '/Position_Scope'], ...
-    'Position', [sc_x, 290, sc_x+50, 340], 'NumInputPorts', '1');
+    'Position', [sc_x, 270, sc_x+50, 320], ...
+    'NumInputPorts', '1');
 add_line(mdl, 'Plant_6DOF/1', 'Position_Scope/1', 'autorouting', 'smart');
 
-% To Workspace blocks
-log_items = {'log_position', 'Plant_6DOF/1'; ...
-             'log_euler',    'Plant_6DOF/4'; ...
-             'log_airdata',  'Plant_6DOF/7'; ...
-             'log_surfaces', 'Actuators/1'};
-for i = 1:size(log_items,1)
+% Scope: Controller Debug
+add_block('simulink/Sinks/Scope', [mdl '/INDI_Debug'], ...
+    'Position', [sc_x, 350, sc_x+50, 400], ...
+    'NumInputPorts', '1');
+add_line(mdl, 'INDI_Controller/2', 'INDI_Debug/1', 'autorouting', 'smart');
+
+% --- To Workspace blocks for post-simulation analysis ---
+log_items = {
+    'log_position',   'Plant_6DOF/1';
+    'log_velocity',   'Plant_6DOF/2';
+    'log_euler',      'Plant_6DOF/4';
+    'log_airdata',    'Plant_6DOF/7';
+    'log_surfaces',   'Actuators/1';
+    'log_guid_debug', 'Guidance/3';
+    'log_indi_debug', 'INDI_Controller/2';
+};
+
+for i = 1:size(log_items, 1)
     bname = [mdl '/TW_' log_items{i,1}];
     add_block('simulink/Sinks/To Workspace', bname, ...
-        'Position', [sc_x+80, 50+(i-1)*80, sc_x+160, 70+(i-1)*80], ...
-        'VariableName', log_items{i,1}, 'SaveFormat', 'Array');
-    add_line(mdl, log_items{i,2}, ['TW_' log_items{i,1} '/1'], 'autorouting', 'smart');
+        'Position', [sc_x+80, 30+(i-1)*55, sc_x+170, 50+(i-1)*55], ...
+        'VariableName', log_items{i,1}, ...
+        'SaveFormat', 'Array');
+    add_line(mdl, log_items{i,2}, ['TW_' log_items{i,1} '/1'], ...
+        'autorouting', 'smart');
 end
 
 %% ====================================================================
 %  SOLVER CONFIGURATION
 %  ====================================================================
 
-set_param(mdl, 'Solver', 'ode4');
-set_param(mdl, 'FixedStep', num2str(dt));
+set_param(mdl, 'Solver', 'ode4');             % Fixed-step RK4
+set_param(mdl, 'FixedStep', num2str(dt));     % 0.004 s = 250 Hz
 set_param(mdl, 'StopTime', num2str(sim_params.t_end));
 set_param(mdl, 'SaveFormat', 'Array');
 set_param(mdl, 'SaveOutput', 'on');
@@ -228,7 +304,18 @@ set_param(mdl, 'SaveTime', 'on');
 set_param(mdl, 'LimitDataPoints', 'off');
 
 %% ====================================================================
-%  SAVE
+%  TITLE ANNOTATION
+%  ====================================================================
+
+add_block('simulink/Annotations/Note', [mdl '/Title'], ...
+    'Position', [50, -50, 900, -10]);
+set_param([mdl '/Title'], 'Text', ...
+    ['UCAV INDI Autonomous Flight Control  |  ' ...
+     'Conventional Tail (Aileron+Elevator+Rudder)  |  ' ...
+     'Cm_alpha > 0 (UNSTABLE)  |  Run setup_ucav.m first']);
+
+%% ====================================================================
+%  SAVE MODEL
 %  ====================================================================
 
 save_system(mdl);
@@ -237,11 +324,23 @@ fprintf('\n==========================================================\n');
 fprintf(' MODEL BUILT: %s.slx\n', mdl);
 fprintf('==========================================================\n\n');
 fprintf('Architecture:\n');
-fprintf('  [Mission WPs] → [L1/TECS Guidance] → [NDI/INDI Autopilot] → [Actuators] → [6-DOF Plant]\n');
-fprintf('                        ↑                      ↑                    │              │\n');
-fprintf('                        └──────────────────────┴────────────────────┴──────────────┘\n');
-fprintf('\n');
+fprintf('  [L1+PI Guidance] -> [INDI Controller] -> [Actuators] -> [6-DOF Plant]\n');
+fprintf('       ^                    ^                  |              |\n');
+fprintf('       +--------------------+------------------+--------------+\n');
+fprintf('                         (feedback)\n\n');
+fprintf('Control surfaces: Aileron, Elevator, Rudder (3 channels, NO canard)\n\n');
 fprintf('To run:\n');
-fprintf('  1. setup_ucav         (load parameters)\n');
-fprintf('  2. open_system(''%s'')  (open model)\n', mdl);
-fprintf('  3. sim(''%s'')          (run simulation)\n\n', mdl);
+fprintf('  1. setup_ucav                    %% Load parameters\n');
+fprintf('  2. build_ucav_simulink_model     %% This script (already done)\n');
+fprintf('  3. sim(''%s'')            %% Run simulation\n\n', mdl);
+fprintf('Scopes (open at sim start):\n');
+fprintf('  - Guidance_Debug:  wp_idx, dist_wp, xtrack, alt_cmd, alt, V_cmd, V, lap\n');
+fprintf('  - Attitude_Scope:  euler angles + angular rates\n');
+fprintf('  - Surface_Scope:   commanded vs actual deflections\n');
+fprintf('  - Position_Scope:  NED position\n');
+fprintf('  - INDI_Debug:      rate commands, alpha, beta, V, accel commands\n\n');
+fprintf('To Workspace variables:\n');
+fprintf('  log_position, log_velocity, log_euler, log_airdata,\n');
+fprintf('  log_surfaces, log_guid_debug, log_indi_debug\n\n');
+fprintf('Solver: ODE4 (fixed-step RK4), dt = %g s (%d Hz)\n', dt, round(1/dt));
+fprintf('Stop time: %g s\n\n', sim_params.t_end);
